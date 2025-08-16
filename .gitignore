@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+.DS_Store
+*.pyc
+*.pyo
+*.pyd
+.python-version
+.env
+.env.*
+/.idea/
+/.vscode/
+**/.ipynb_checkpoints/
+*.log
+fly.log
+dist/
+build/
+*.egg-info/
+# Evitar subir PDFs grandes si fuese necesario
+# guia_carretera_1.pdf
+
