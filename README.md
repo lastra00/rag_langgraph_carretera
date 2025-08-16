@@ -8,6 +8,14 @@ Este repositorio contiene un sistema RAG agentic especializado en turismo para l
 - `fly.toml`: Configuración de despliegue en Fly.io.
 - `info_carretera.txt` y `guia_carretera_1.pdf`: Fuentes documentales utilizadas en el índice (PDF + texto guía).
 
+### Prueba rápida (Playground en Fly.io)
+
+Para testear el RAG directamente en producción, usa el Playground de LangServe en Fly.io:
+
+- Playground: [rag-langgraph-carretera.fly.dev/agentic_tourism/playground](https://rag-langgraph-carretera.fly.dev/agentic_tourism/playground/)
+
+Nota: si la app estuvo inactiva, la primera carga puede demorar algunos segundos por cold start.
+
 ### Visión general
 
 ```mermaid
