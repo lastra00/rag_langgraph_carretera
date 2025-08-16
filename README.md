@@ -359,3 +359,57 @@ Resultado: un conjunto pequeño (8) con buen balance entre cobertura semántica 
 - Si persisten scores bajos por cobertura, aumenta `fetch_k` (MMR) o ajusta el chunking en el índice.
 - Evita más de 2–3 reintentos: suben latencia/costo con retornos decrecientes.
 
+---
+
+## 11) BM25 “local” en memoria y ejecución en Fly.io
+
+### 11.1 ¿Qué significa “en memoria”?
+- El índice BM25 se construye temporalmente en la RAM del proceso Python que corre tu API (dentro del contenedor/VM de Fly.io).
+- No se guarda en Qdrant ni en disco; existe solo durante la vida de la request que lo crea.
+
+### 11.2 ¿Cuándo y con qué corpus se crea?
+- Se crea en cada request, dentro del nodo `retrieve`, después de obtener los candidatos vectoriales vía MMR.
+- El corpus del BM25 local son exclusivamente esos ~8 chunks candidatos (no todo el corpus indexado).
+
+### 11.3 ¿Cómo se construye y usa?
+- Tokeniza cada chunk con `simple_preprocess` (minúsculas, normalización de acentos/puntuación, etc.).
+- Calcula los pesos BM25 (TF, IDF, normalización por longitud) sobre ese mini‑corpus.
+- Ejecuta la misma query tokenizada contra ese mini‑índice y retorna un top‑k léxico (por defecto `k=6`).
+- El resultado BM25 se fusiona con el orden vectorial, se deduplican entradas por metadata y se recorta a 8 finales.
+
+### 11.4 ¿Qué pasa exactamente al consultar desde Fly.io?
+1) La petición HTTP llega a FastAPI (Uvicorn) dentro del contenedor.
+2) Se calcula el embedding de la query y se llama a Qdrant para obtener candidatos (MMR).
+3) En el mismo proceso se construye el BM25 local con esos ~8 chunks y se ejecuta la query léxica.
+4) Se fusionan resultados y se quedan 8 chunks finales.
+5) Se calcula `doc_quality_score`; si es bajo, se intenta rewrite (hasta 2 veces). Si no, se pasa a `generate`.
+6) Se responde y los objetos temporales (incluido el BM25 local) quedan elegibles para GC; no persiste nada.
+
+### 11.5 ¿Por qué hacerlo local?
+- Evita mantener un índice BM25 global en memoria o disco (costoso en tamaño/operación).
+- El costo por request es bajo porque el corpus temporal son pocos chunks (~8).
+- Complementa la recuperación semántica con coincidencia literal (frases exactas, nombres, números).
+
+### 11.6 Concurrencia
+- Cada request construye su propio BM25 local; no hay estado compartido entre requests.
+- Esto reduce acoplamiento y evita condiciones de carrera.
+
+### 11.7 Tuning rápido
+- Si te importan más las coincidencias frase‑exacta, sube `k` del BM25 local (p. ej., 6 → 8–10).
+- Si notas baja cobertura previa, ajusta `fetch_k`/`k` del MMR antes que aumentar el corpus del BM25 local.
+
+### 11.8 Diagrama de flujo de una request
+
+```mermaid
+graph TD
+  U["Consulta del usuario"] --> MMR["Qdrant MMR<br/>fetch_k=40 → k=8"]
+  MMR --> NORM["Normalización ligera<br/>unir guiones, limpieza"]
+  NORM --> BM25["BM25 local en memoria<br/>k=6 sobre candidatos"]
+  BM25 --> FUSION["Fusión + deduplicación<br/>corte a 8 finales"]
+  FUSION --> GRADE["Cálculo doc_quality_score<br/>promedio similitud coseno"]
+  GRADE -->|"score < 0.5 y reintentos ≤ 2"| REWRITE["Rewrite de consulta"]
+  REWRITE --> MMR
+  GRADE -->|"score ≥ 0.5 o sin reintentos"| GEN["Generación con LLM<br/>contexto = 8 chunks"]
+  GEN --> RESP["Respuesta + fuentes + métricas"]
+```
+
