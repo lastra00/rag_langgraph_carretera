@@ -279,3 +279,46 @@ rag_langgraph_carretera/
 Los documentos (`guia_carretera_1.pdf`, `info_carretera.txt`) se incluyen con fines educativos/demostrativos. Verifica derechos antes de usar en producción.
 
 
+---
+
+## 9) Estrategias de recuperación (MMR y BM25) en detalle
+
+### 9.1 ¿Qué recupera el sistema? (unidad: chunks)
+- **Unidad recuperada**: `Document` de LangChain que representa un **chunk** del corpus indexado (no documentos completos). Los chunks y su metadata (p. ej., `page`, `chunk_id`, `source_title`) fueron generados en el notebook al crear la colección en Qdrant.
+
+### 9.2 MMR (Maximal Marginal Relevance)
+- **Qué es**: técnica de selección que equilibra relevancia con la consulta y diversidad entre resultados para evitar redundancia.
+- **Cómo funciona (intuición)**: selecciona iterativamente; en cada paso elige el siguiente chunk maximizando [relevancia − redundancia]. Un parámetro λ controla el balance (λ alto → más relevancia; λ bajo → más diversidad).
+- **Implementación aquí**: se usa como primer filtro sobre Qdrant.
+  - Configuración: `k=8`, `fetch_k=40`, `lambda_mult=0.5`.
+  - Flujo: Qdrant devuelve hasta 40 candidatos por similaridad; MMR selecciona 8 finales diversos y relevantes.
+
+### 9.3 BM25 (ranking léxico probabilístico) “local”
+- **Qué es**: método clásico basado en coincidencia de términos (palabras), ponderado por frecuencia inversa de documento y normalización por longitud.
+- **Por qué aquí**: complementa a la semántica con sensibilidad a frases exactas, nombres propios, números y variantes literales.
+- **Implementación aquí**: BM25 se construye en memoria **solo** sobre los candidatos que trajo MMR (no sobre todo el corpus) y re‑ranquea esos candidatos.
+- **Preproceso**: normaliza acentos, signos y guiones de fin de línea para no perder coincidencias (ver `simple_preprocess` y `normalize_hyphens` en `server.py`).
+
+### 9.4 ¿Cuántos chunks toma y cómo se seleccionan?
+- Paso 1 (vectorial + MMR): considera hasta **40** candidatos; selecciona **8** chunks diversos y relevantes.
+- Paso 2 (BM25 local): re‑ranquea esos **8**; se toman los mejores para priorizar literalidad.
+- Paso 3 (fusión + deduplicación): se combinan listas BM25 y vectorial, se eliminan duplicados por metadata y se corta a **8** finales.
+
+Resultado: un conjunto pequeño (8) con buen balance entre cobertura semántica y coincidencias literales, ideal para limitar tokens y alucinaciones.
+
+### 9.5 Trade‑offs y cuándo conviene
+- **Recall**: MMR + BM25 suele recuperar mejor en consultas ambiguas o con sinónimos/variantes.
+- **Precisión/latencia**: la etapa extra de BM25 añade algo de CPU, pero al operar sobre pocos candidatos el costo es bajo.
+- **Robustez**: combinado con el nodo `grade` y la `rewrite`, mejora cuando la consulta original es vaga.
+
+### 9.6 Parámetros útiles para tuning
+- MMR:
+  - `fetch_k`: 40 → 60–80 si falta cobertura temática.
+  - `k`: 8 → 6–10 según límite de tokens y densidad informativa.
+  - `lambda_mult`: 0.5 → 0.3–0.7 para ajustar relevancia vs diversidad.
+- BM25 local:
+  - `k`: 6 → 6–10 si importan más las frases exactas.
+- General:
+  - Ajusta tamaño/solapamiento de chunks en el índice; impacta tanto como los parámetros de recuperación.
+  - La **dimensión de embeddings** debe coincidir con la colección (aquí 256); cambiarla requiere reindexar en el notebook.
+
