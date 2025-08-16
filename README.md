@@ -322,3 +322,40 @@ Resultado: un conjunto pequeño (8) con buen balance entre cobertura semántica 
   - Ajusta tamaño/solapamiento de chunks en el índice; impacta tanto como los parámetros de recuperación.
   - La **dimensión de embeddings** debe coincidir con la colección (aquí 256); cambiarla requiere reindexar en el notebook.
 
+---
+
+## 10) Cálculo de `doc_quality_score` y lógica de reescritura (rewrite)
+
+### 10.1 ¿Qué mide `doc_quality_score`?
+- Es el **promedio de similitudes coseno** entre el embedding de la consulta y los embeddings de los **chunks finales** recuperados (tras MMR, BM25 y fusión).
+- Rango efectivo 0.0–1.0 (valores negativos se truncan a 0.0).
+
+### 10.2 Cómo se calcula (resumen)
+1) Se generan embeddings con `text-embedding-3-large (dim=256)` para:
+   - La consulta (`embed_query`).
+   - Cada chunk final (`embed_documents`).
+2) Se calcula la **similitud coseno** consulta↔chunk para cada chunk.
+3) Se promedian esas similitudes → `doc_quality_score`.
+
+### 10.3 Umbral para activar `rewrite`
+- Si `doc_quality_score < 0.5` → `should_rewrite = True`.
+- Este umbral es conservador; ajústalo según tu dominio:
+  - Más reescrituras: 0.6
+  - Menos reescrituras: 0.4
+
+### 10.4 Límite de reintentos
+- Aunque el score sea bajo, se permite reescritura **hasta 2 veces**. Tras eso, el flujo continúa a `generate`.
+
+### 10.5 Momento del cálculo
+- El score se calcula **después** de combinar MMR + BM25 y recortar a los **8** chunks finales. Así, la evaluación refleja el contexto real con el que se generará la respuesta.
+
+### 10.6 Notas y consideraciones
+- Si no hay chunks (lista vacía), el score es `0.0` → forzará `rewrite` (respetando el límite de 2).
+- La normalización ligera del texto (p. ej., unir palabras cortadas por guiones de fin de línea) ayuda a obtener embeddings más consistentes.
+- Coste: solo se embeben ~8 chunks por request para el score → impacto leve en latencia.
+
+### 10.7 Sugerencias de tuning
+- Antes de mover el umbral, prueba mejorar el prompt de `rewrite` para capturar más **intención y sinónimos** del dominio.
+- Si persisten scores bajos por cobertura, aumenta `fetch_k` (MMR) o ajusta el chunking en el índice.
+- Evita más de 2–3 reintentos: suben latencia/costo con retornos decrecientes.
+
